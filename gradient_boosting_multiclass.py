@@ -5,27 +5,32 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
-# %%
-# train test split
 
 import numpy as np
-from sklearn.datasets import load_iris
-from sklearn.model_selection import cross_validate
+from sklearn.datasets import make_classification
+from sklearn.model_selection import cross_validate, train_test_split
+from sklearn.preprocessing import MinMaxScaler
 from sklearn.tree import DecisionTreeClassifier
-
-data = load_iris()
-
-X = data["data"]
-y = data["target"].ravel()
-from sklearn.model_selection import train_test_split
-
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
 rng = 42
 
+n_classes = 4
+
+X, y = make_classification(n_samples=500, n_features=12,
+                            n_informative=8,
+                            n_redundant=2, n_repeated=2,
+                            n_classes=n_classes,
+                            random_state=rng)
+
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=rng)
+
+scaler = MinMaxScaler()
+X_train = scaler.fit_transform(X_train)
+X_test = scaler.transform(X_test)
+
 # create the stump
 Tree_model = DecisionTreeClassifier(criterion="entropy")
-predictions = np.mean(cross_validate(Tree_model, X, y, cv=10)['test_score'])
+predictions = np.mean(cross_validate(Tree_model, X_train, y_train, cv=10)['test_score'])
 
 print(f'The accuracy is: {predictions*100:.2f}%')
 
@@ -33,38 +38,24 @@ print(f'The accuracy is: {predictions*100:.2f}%')
 
 # heavily borrowed from scikit learn
 
-from scipy.special import logsumexp
 from sklearn.dummy import DummyClassifier
 from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from sklearn.utils import check_random_state
 
 
 class GradientBoosting:
-    def __init__(self, loss='log_loss', n_estimators=None, learning_rate=0.1, max_depth=None, random_state=None):
-        self.loss = loss
-        if n_estimators is None:
-            self.n_estimators = 10
-        else:
-            self.n_estimators = n_estimators
+    def __init__(self, n_estimators=30, learning_rate=0.1, max_depth=3, random_state=42):
+        self.n_estimators = n_estimators
         self.lr = learning_rate
-        if max_depth is None:
-            self.max_depth = 3
-        elif isinstance(max_depth, int):
-            self.max_depth = max_depth
+        self.max_depth = max_depth
+        self.random_state = random_state
         self.estimators = None
         self.predictions = None
         self.classes_ = None
         self.n_classes_ = None
         self.init_ = self._init_estimator()
-        if random_state is None:
-            self.random_state = 42
-        elif isinstance(random_state, int):
-            self.random_state = random_state
-        else:
-            raise ValueError(f"random_state must be an int. Got {type(random_state)}")
 
     def fit(self, X, y):
-        random_state = check_random_state(self.random_state)
+        random_state = np.random.RandomState(self.random_state)
         self.init_.fit(X, y)
         raw_predictions = self._get_init_raw_predictions(X, self.init_)
         # get the classes
@@ -104,7 +95,7 @@ class GradientBoosting:
         return raw_predictions
 
     def _decision_function(self, X, tree):
-        # convert tree predictions (probabilities) to logprob
+        # convert tree predictions (log-probabilities) to probabilities
         return self.lr * np.nan_to_num(np.exp(tree.predict(X).ravel()))
 
     def _init_estimator(self):
@@ -154,7 +145,7 @@ class GradientBoosting:
 
     def _raw_prediction_to_proba(self, raw_predictions):
         # convert logprob to probabillity
-        return np.nan_to_num(np.exp(raw_predictions - (logsumexp(raw_predictions, axis=1)[:, np.newaxis])))
+        return np.nan_to_num(np.exp(raw_predictions))
 
 
 #%%
@@ -166,14 +157,13 @@ from sklearn.metrics import accuracy_score
 
 plt.style.use('fivethirtyeight')
 
-number_of_base_learners = 5
+number_of_base_learners = 30
 
 fig = plt.figure(figsize=(8, 6))
 ax0 = fig.add_subplot(111)
 accuracies_custom = []
 accuracies_sklearn = []
-learning_rate = 0.3
-rng_sklearn = 0
+learning_rate = 0.1
 max_depth = 3
 
 for i in range(1, number_of_base_learners + 1):
@@ -193,7 +183,7 @@ for i in range(1, number_of_base_learners + 1):
         n_estimators=i,
         learning_rate=learning_rate,
         max_depth=max_depth,
-        random_state=rng_sklearn,
+        random_state=rng,
     )
     model.fit(X_train, y_train)
     preds = model.predict(X_test)
@@ -229,12 +219,10 @@ raw_predictions
 y = np.array(original_y == k, dtype=np.float64)
 y, y.shape
 
-# %%
 
-# Compute the log of the sum of exponentials of input elements
-logsumexp(raw_predictions, axis=1)
 
 #%%
+# Compute the log of the sum of exponentials of input elements
 # this sums to 0 in every correct case????
 np.log(np.sum(np.exp(raw_predictions), axis=1))
 
