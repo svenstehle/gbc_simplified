@@ -5,6 +5,7 @@
 # This source code is licensed under the BSD-style license found in the
 # LICENSE file in the root directory of this source tree.
 
+import pdb
 
 import numpy as np
 from sklearn.datasets import make_classification
@@ -16,11 +17,9 @@ rng = 42
 
 n_classes = 4
 
-X, y = make_classification(n_samples=500, n_features=12,
-                            n_informative=8,
-                            n_redundant=2, n_repeated=2,
-                            n_classes=n_classes,
-                            random_state=rng)
+X, y = make_classification(
+    n_samples=500, n_features=12, n_informative=8, n_redundant=2, n_repeated=2, n_classes=n_classes, random_state=rng
+)
 
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=rng)
 
@@ -54,13 +53,13 @@ class GradientBoosting:
         self.n_classes_ = None
         self.init_ = self._init_estimator()
 
-    def fit(self, X, y):
+    def fit(self, X: np.ndarray, y: np.ndarray):
         random_state = np.random.RandomState(self.random_state)
         self.init_.fit(X, y)
         raw_predictions = self._get_init_raw_predictions(X, self.init_)
         # get the classes
         self.classes_ = getattr(self.init_, "classes_", None)
-        self.n_classes_ = len(self.classes_)
+        self.n_classes_ = len(self.classes_)    # TODO merge dummyestimator and fix this?
 
         # run the boosting by creating ``n_estimators`` x ``n_classes``
         self.estimators = np.empty((self.n_estimators, self.n_classes_), dtype=object)
@@ -71,42 +70,25 @@ class GradientBoosting:
 
         return self
 
-    def _fit_stage(self, iboost, X, y, raw_predictions, random_state):
+    def _fit_stage(self, iboost: int, X: np.ndarray, y: np.ndarray, raw_predictions: np.ndarray, random_state: int):
         original_y = y
-        # save the raw_predictions for each stage
-        # to get fresh gradients for each class
-        # raw_predictions are in logprobability
-        raw_predictions_copy = raw_predictions.copy()
+        # raw_predictions are in log-probability
         for k in range(self.n_classes_):
             # encode y as array of [0, 1]. 1 if element equals k, 0 otherwise
             y = np.where(original_y == k, 1, 0)
-            # get the negative gradients for each class
-            residuals = self._negative_gradient(y, raw_predictions_copy, k)
 
-            # fit regression tree on residuals (negative gradients)
+            # get the negative gradients (residuals) for each class
+            residuals = self._negative_gradient(y, raw_predictions, k)
+
+            # fit regression tree on residuals
             tree = DecisionTreeRegressor(max_depth=self.max_depth, splitter="best", random_state=random_state)
             tree.fit(X, residuals)
 
             # update predictions
-            raw_predictions[:, k] += self._decision_function(X, tree)
+            raw_predictions[:, k] = self._decision_function(X, raw_predictions, k, tree)
 
             # add tree to ensemble
             self.estimators[iboost, k] = tree
-        return raw_predictions
-
-    def _decision_function(self, X, tree):
-        # convert tree predictions (log-probabilities) to probabilities
-        return self.lr * np.nan_to_num(np.exp(tree.predict(X).ravel()))
-
-    def _init_estimator(self):
-        return DummyClassifier(strategy="prior")
-
-    def _get_init_raw_predictions(self, X, estimator):
-        # initialize raw predictions as log-probabilities
-        probas = estimator.predict_proba(X)
-        eps = np.finfo(np.float32).eps
-        probas = np.clip(probas, eps, 1 - eps)
-        raw_predictions = np.log(probas).astype(np.float64)
         return raw_predictions
 
     def _negative_gradient(self, y: np.ndarray, raw_predictions: np.ndarray, k: int):
@@ -129,7 +111,22 @@ class GradientBoosting:
         clipped_probas_class_k = np.nan_to_num(probas_class_k)
         return y - clipped_probas_class_k
 
-    def predict(self, X):
+    def _decision_function(self, X: np.ndarray, raw_predictions: np.ndarray, k: int, tree: DecisionTreeRegressor):
+        # merge a tree's predictions (negative gradient) with the raw_predictions (log-probabilities)
+        return raw_predictions[:, k].ravel() + self.lr * tree.predict(X)
+
+    def _init_estimator(self):
+        return DummyClassifier(strategy="prior")
+
+    def _get_init_raw_predictions(self, X: np.ndarray, estimator: DummyClassifier):
+        # initialize raw predictions as log-probabilities
+        probas = estimator.predict_proba(X)
+        eps = np.finfo(np.float32).eps
+        probas = np.clip(probas, eps, 1 - eps)
+        raw_predictions = np.log(probas).astype(np.float64)
+        return raw_predictions
+
+    def predict(self, X: np.ndarray):
         # make a prediction with each estimator
         classes = self.classes_[:, np.newaxis]
         raw_predictions = self._get_init_raw_predictions(X, self.init_)
@@ -137,13 +134,20 @@ class GradientBoosting:
         for i in range(self.n_estimators):
             for k in classes:
                 # apply decision function to each class
-                raw_predictions[:, k] += self._decision_function(X, self.estimators[i, k][0]).reshape(-1, 1)
-
+                try:
+                    raw_predictions[:, k] = self._decision_function(
+                        X,
+                        raw_predictions,
+                        k,
+                        self.estimators[i, k][0],
+                    ).reshape(-1, 1)
+                except ValueError:
+                    pdb.set_trace()
         proba = self._raw_prediction_to_proba(raw_predictions)
         # get class label for max probability per row
         return self.classes_.take(np.argmax(proba, axis=1), axis=0)
 
-    def _raw_prediction_to_proba(self, raw_predictions):
+    def _raw_prediction_to_proba(self, raw_predictions: np.ndarray):
         # convert logprob to probabillity
         return np.nan_to_num(np.exp(raw_predictions))
 
@@ -152,18 +156,19 @@ class GradientBoosting:
 ######Plot the accuracy of the model against the number of stump-estimators used##########
 
 import matplotlib.pyplot as plt
-from sklearn.ensemble import GradientBoostingClassifier
+from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
 from sklearn.metrics import accuracy_score
 
 plt.style.use('fivethirtyeight')
 
-number_of_base_learners = 30
+number_of_base_learners = 60
 
 fig = plt.figure(figsize=(8, 6))
 ax0 = fig.add_subplot(111)
 accuracies_custom = []
 accuracies_sklearn = []
-learning_rate = 0.1
+accuracies_sklearn_rf = []
+learning_rate = 0.5
 max_depth = 3
 
 for i in range(1, number_of_base_learners + 1):
@@ -178,6 +183,7 @@ for i in range(1, number_of_base_learners + 1):
     preds = model.predict(X_test)
     acc = accuracy_score(y_test, preds)
     accuracies_custom.append(acc)
+
     # sklearn GBC
     model = GradientBoostingClassifier(
         n_estimators=i,
@@ -190,9 +196,20 @@ for i in range(1, number_of_base_learners + 1):
     acc = accuracy_score(y_test, preds)
     accuracies_sklearn.append(acc)
 
-ax0.plot(range(len(accuracies_custom)), accuracies_custom, alpha=0.3)
-ax0.plot(range(len(accuracies_sklearn)), accuracies_sklearn, alpha=0.3)
-plt.legend(['custom', 'sklearn_gbc'])
+    # sklearn RF
+    model = RandomForestClassifier(
+        n_estimators=i,
+        random_state=rng,
+    )
+    model.fit(X_train, y_train)
+    preds = model.predict(X_test)
+    acc = accuracy_score(y_test, preds)
+    accuracies_sklearn_rf.append(acc)
+
+ax0.plot(range(len(accuracies_custom)), accuracies_custom, alpha=0.5)
+ax0.plot(range(len(accuracies_sklearn)), accuracies_sklearn, alpha=0.5)
+ax0.plot(range(len(accuracies_sklearn_rf)), accuracies_sklearn_rf, alpha=0.5)
+plt.legend(['custom', 'sklearn_gbc', 'sklearn_rf'])
 ax0.set_xlabel('# models used for Boosting ')
 ax0.set_ylabel('accuracy')
 print(
@@ -218,13 +235,6 @@ raw_predictions
 
 y = np.array(original_y == k, dtype=np.float64)
 y, y.shape
-
-
-
-#%%
-# Compute the log of the sum of exponentials of input elements
-# this sums to 0 in every correct case????
-np.log(np.sum(np.exp(raw_predictions), axis=1))
 
 #%%
 # the log-probabilities for class k
