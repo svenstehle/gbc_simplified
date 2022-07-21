@@ -102,12 +102,8 @@ class GradientBoostingCustom:
         outputs: np.ndarray,
         random_state: np.random.RandomState,
     ):
-        original_y = y
         for k in range(self.n_classes_):
-            # encode y as array of [0, 1]. 1 if element equals k, 0 otherwise
-            y = np.where(original_y == k, 1, 0)
-
-            # get the negative gradients (residuals) for each class
+            # get the negative gradient (residuals) for each class
             residuals = self._compute_residuals(y, outputs, k)
 
             # fit regression tree on residuals
@@ -122,27 +118,56 @@ class GradientBoostingCustom:
         return outputs
 
     def _compute_residuals(self, y: np.ndarray, outputs: np.ndarray, k: int):
-        """Compute negative gradients for class k.
-        Negative gradients can be understood as the directional error and the magnitude of
-        the necessary change in probability to correctly predict each respective label with
+        """Compute residuals for class k.
+        Residuals can be understood as negative gradient.
+        They are expressed as the directional error
+        and the magnitude of the necessary change in probability
+        to correctly predict each respective label with
         regard to class k.
 
         Args:
-            y (ndarray of shape (n_samples, )): Target labels
-            outputs (ndarray of shape (n_samples, K)): The raw predictions as log-probabilities
-                of the tree ensemble at iteration ``i - 1`` for all ``K`` classes.
-            k (int): index of the class
+            y (np.ndarray of shape (n_samples, )): Target labels.
+            outputs (np.ndarray of shape (n_samples, K)): The outputs as
+                log-probabilities of the tree ensemble at
+                iteration ``i - 1`` for all ``K`` classes.
+            k (int): index of the class.
 
         Returns:
-            ndarray of shape (n_samples, ): negative gradient for class k
+            np.ndarray of shape (n_samples, ): negative gradient for class k.
         """
+        # encode y as array of [0, 1]. 1 if element equals k, 0 otherwise
+        y = np.where(y == k, 1, 0)
+
+        # get outputs for class k and convert to clipped probabilities
         log_probas_class_k = outputs[:, k]
         probas_class_k = np.exp(log_probas_class_k)
         clipped_probas_class_k = np.nan_to_num(probas_class_k)
-        return y - clipped_probas_class_k
 
-    def _update_outputs(self, X: np.ndarray, outputs: np.ndarray, k: int, tree: DecisionTreeRegressor):
-        # merge a tree's predictions (residuals) with the outputs for class k (log-probabilities)
+        # compute and return residuals (negative gradient)
+        negative_gradient = y - clipped_probas_class_k
+        return negative_gradient
+
+    def _update_outputs(
+        self,
+        X: np.ndarray,
+        outputs: np.ndarray,
+        k: int,
+        tree: DecisionTreeRegressor,
+    ):
+        """Updates the outputs with the predictions for the residuals
+        of the current boosting stage.
+
+        Args:
+            X (np.ndarray of shape (n_samples, n_features)): input features.
+            outputs (np.ndarray of shape (n_samples, K)): The outputs as
+                log-probabilities of the tree ensemble at
+                iteration ``i - 1`` for all ``K`` classes.
+            k (int): index of the class.
+            tree (DecisionTreeRegressor): the tree that was fit during the current stage.
+
+        Returns:
+            np.ndarray of shape (n_samples, ): the updated outputs for class k.
+        """
         return outputs[:, k].ravel() + self.lr * tree.predict(X)
 
     def _get_init_outputs(self, X: np.ndarray, estimator: DummyClassifier):
@@ -283,6 +308,52 @@ ensemble = np.empty((10, 3), dtype=object)
 ensemble
 #%%
 
+# gist for residual computation
+
+# we want to compute the residuals for class k=2
+>>> k = 2
+
+# our original labels look like this
+>>> y = np.array([0, 1, 2, 2])
+# we will convert them to our binary encoding for k=2
+>>> y = np.where(y == k, 1, 0)
+# now, y looks like this:
+>>> y
+array([0, 0, 1, 1])
+
+# the current probabilities look like this
+# we have 4 samples and 3 classes, resulting in a 4x3 array
+# each row of the array sums up to 1, since we deal with probabilities
+>>> probabilities_of_class_k = np.array([
+        [0.3, 0.5, 0.2],
+        [0.3, 0.2, 0.5],
+        [0.6, 0.1, 0.3],
+        [0.2, 0.1, 0.7],
+    ])
+
+# the actual entries in the ``output`` array are log-probabilities
+>>> outputs = np.log(probabilities_of_class_k)
+
+# we get the log-probabilities for class k from the outputs
+>>> log_probas_class_k = outputs[:, k]
+>>> log_probas_class_k
+array([-1.60943791, -0.69314718, -1.2039728 , -0.35667494])
+
+# convert them to probabilities and clip them in case of NaN entries
+>>> probas_class_k = np.exp(log_probas_class_k)
+>>> clipped_probas_class_k = np.nan_to_num(probas_class_k)
+>>> clipped_probas_class_k
+array([0.2, 0.5, 0.3, 0.7])
+
+# finally, we compute and return residuals (negative gradient)
+>>> negative_gradient = y - clipped_probas_class_k
+>>> negative_gradient
+array([-0.2, -0.5,  0.7,  0.3])
+
+
+
+#%%
+
 # investigate the negative gradient computation on raw predictions
 k = 2
 original_y = np.array([0, 1, 2, 2])
@@ -308,13 +379,12 @@ log_prob
 # the probabilities for class k
 probas = np.exp(log_prob)
 
-#%%
 # wrapper in case of nan
 probas_clipped = np.nan_to_num(probas)
 probas_clipped
 
 #%%
-# the negative gradients
+# the negative gradient
 y - probas_clipped
 
 # %%
