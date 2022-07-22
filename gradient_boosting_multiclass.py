@@ -1,5 +1,5 @@
 # %%
-# Copyright (c) <2022>, <Sven Stehle>
+# Copyright (c) 2022, Sven Stehle
 # All rights reserved.
 
 # This source code is licensed under the BSD-style license found in the
